@@ -16,7 +16,8 @@ test_time: 3
 
 import logging
 import math
-import time
+import datetime
+import numpy as np
 
 
 class TestZ:
@@ -46,12 +47,12 @@ class ResonanceZProbe:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.gcode = self.printer.lookup_object("gcode")
-        self.accel_per_hz = config.getfloat("accel_per_hz", 75.0, above=0.0)
+        # consider that accel_per_hz * freq might be caped to the printer max accel
+        self.accel_per_hz = config.getfloat("accel_per_hz", 1.5, above=0.0)
 
         self.step_size = config.getfloat("babystep", 0.01, minval=0.005)
-        # Defaults are such that max_freq * accel_per_hz == 10000 (max_accel)
-        self.z_freq = config.getfloat("z_vibration_freq", 180, minval=80, maxval=200.0)
-        self.amp_threshold = config.getfloat("amplitude_threshold", 700, above=500)
+        self.z_freq = config.getfloat("z_vibration_freq", 80, minval=50.0, maxval=200.0)
+        self.amp_threshold = config.getfloat("amplitude_threshold", 700.0, above=500.0)
         self.safe_min_z = config.getfloat("safe_min_z", 1)
 
         self.test_time = config.getint("test_time", 3.0, minval=1, maxval=10)
@@ -70,7 +71,7 @@ class ResonanceZProbe:
     def hold_z_freq(self, gcmd, seconds, freq):
         """holds a resonance for N seconds
         resonance code taken from klipper's test_resonances command"""
-        end = time.time() + seconds
+        end = datetime.datetime.now() + datetime.timedelta(seconds=seconds)
         axis = TestZ()
         toolhead = self.printer.lookup_object("toolhead")
         X, Y, Z, E = toolhead.get_position()
@@ -82,8 +83,10 @@ class ResonanceZProbe:
         else:
             input_shaper = None
         gcmd.respond_info("starting freq %i for %i seconds" % (freq, seconds))
-        while time.time() < end:
-            t_seg = 0.25 / freq
+        t_seg = 0.25 / freq
+        max_moves = seconds / t_seg / 2
+        count_moves = 0
+        while count_moves <= max_moves:
             accel = self.accel_per_hz * freq
             max_v = accel * t_seg
             toolhead.cmd_M204(
@@ -97,19 +100,13 @@ class ResonanceZProbe:
             toolhead.move([nX, nY, nZ, E], max_v)
             toolhead.move([X, Y, Z, E], max_v)
             sign = -sign
+            count_moves += 1
         gcmd.respond_info("DONE")
 
-    def babystep_probe(self, gcmd):
-        """
-        move to the test position, start recording acc while resonate z, measure the amplitude and compare with the amp_threshold.
-        lower by babystep untile min safe Z is reached or the amp_threshold is passed.
-        log stuff in the console
-        """
+    def _test(self, gcmd):
         toolhead = self.printer.lookup_object("toolhead")
-        # move thself.probe_pointe toolhead
 
         toolhead.manual_move(self.probe_points, 50.0)
-
         toolhead.wait_moves()
         toolhead.dwell(0.500)
 
@@ -118,11 +115,51 @@ class ResonanceZProbe:
         aclient = chip.start_internal_client()
         raw_values.append(("z", aclient, chip.name))
         self.hold_z_freq(gcmd, self.test_time, self.z_freq)
+        timestamps = []
+        x_data = []
+        y_data = []
+        z_data = []
         for chip_axis, aclient, chip_name in raw_values:
             aclient.finish_measurements()
-            raw_name = "/tmp/adxl_z_test.csv"
-            for sample in aclient.get_samples():
-                gcmd.respond_info(str(sample))
+            for t, accel_x, accel_y, accel_z in aclient.get_samples():
+                timestamps.append(t)
+                x_data.append(accel_x)
+                y_data.append(accel_y)
+                z_data.append(accel_z)
+        t = np.asarray(timestamps)
+        x = np.asarray(x_data)
+        y = np.asarray(y_data)
+        z = np.asarray(z_data)
+        gcmd.respond_info(
+            "Received %i samples, median values x: %i y: %i z: %i"
+            % (len(timestamps), np.median(x), np.median(y), np.median(z))
+        )
+        x = x - np.median(x)
+        y = y - np.median(y)
+        z = z - np.median(z)
+        fourier_series = np.fft.fft(z)
+        gcmd.respond_info(
+            "normalize %i samples, median values x: %i y: %i z: %i"
+            % (len(timestamps), np.median(x), np.median(y), np.median(z))
+        )
+        gcmd.respond_info(
+            "The test lasted %s seconds"
+            % (timestamps[len(timestamps) - 1] - timestamps[0])
+        )
+        gcmd.respond_info("Max amplitude: %s" % np.nanmax(fourier_series))
+
+    def babystep_probe(self, gcmd):
+        """
+        move to the test position, start recording acc while resonate z, measure the amplitude and compare with the amp_threshold.
+        lower by babystep until min safe Z is reached or the amp_threshold is passed.
+        log stuff in the console
+        """
+        # move thself.probe_pointe toolhead
+
+        # while self.probe_points[2] >= self.safe_min_z:
+        gcmd.respond_info("Test Z: %s" % self.probe_points[2])
+        self._test(gcmd)
+        # self.probe_points[2] = self.probe_points[2] - self.step_size
 
     cmd_CALIBRATE_Z_RESONANCE_help = "Calibrate Z making the bed vibrate while probing with the nozzle and record accelerometer data"
 
