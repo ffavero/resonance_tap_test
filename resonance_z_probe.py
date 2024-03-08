@@ -44,7 +44,7 @@ class TestZ:
 
 
 TestPoint = collections.namedtuple(
-    "DataCollection", (("accel_x", "accel_y", "accel_z"), "current_z", "threshold")
+    "DataCollection", ("raw_data", "current_z", "threshold")
 )
 
 
@@ -60,8 +60,8 @@ class TapResonanceData:
     def _rate_above_threshold(self):
         rates = []
         z_height = []
-        for test, curr_z, threshold in self.data:
-            for x, y, z in test:
+        for raw_data, curr_z, threshold in self.data:
+            for t, x, y, z in raw_data:
                 rates.append(sum(z > threshold) / z.size)
             z_height.append(curr_z)
         return rates
@@ -151,7 +151,6 @@ class ResonanceZProbe:
             x_data.append(accel_x)
             y_data.append(accel_y)
             z_data.append(accel_z)
-        t = np.asarray(timestamps)
         x = np.asarray(x_data)
         y = np.asarray(y_data)
         z = np.asarray(z_data)
@@ -174,7 +173,9 @@ class ResonanceZProbe:
         )
         gcmd.respond_info("Max amplitude: %s" % np.nanmax(fourier_series))
         gcmd.respond_info("Rate above threshold: %s" % rate_above_tr)
-        return TestPoint((x, y, z), self.probe_points[2], self.amp_threshold)
+        return TestPoint(
+            (timestamps, x, y, z), self.probe_points[2], self.amp_threshold
+        )
 
     def babystep_probe(self, gcmd):
         """
@@ -190,7 +191,7 @@ class ResonanceZProbe:
             next_test_z = self.probe_points[2] - self.step_size
             next_test_pos = (self.probe_points[0], self.probe_points[1], next_test_z)
             self.probe_points = next_test_pos
-        tap_data = TapResonanceData(data_points)
+        tap_data = TapResonanceData(data_points, "~/printer_data/logs/plots")
 
     cmd_CALIBRATE_Z_RESONANCE_help = "Calibrate Z making the bed vibrate while probing with the nozzle and record accelerometer data"
 
