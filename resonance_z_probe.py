@@ -14,10 +14,10 @@ test_time: 3
 
 """
 
-import logging
+import collections
 import math
-import datetime
 import numpy as np
+import matplotlib.pyplot as plt
 
 
 class TestZ:
@@ -41,6 +41,34 @@ class TestZ:
 
     def get_point(self, l):
         return (self._vib_dir[0] * l, self._vib_dir[1] * l, self._vib_dir[2] * l)
+
+
+TestPoint = collections.namedtuple(
+    "DataCollection", (("accel_x", "accel_y", "accel_z"), "current_z", "threshold")
+)
+
+
+class TapResonanceData:
+    def __init__(self, test_points, out_path):
+        self.data = test_points
+        self.out_path = out_path
+        pass
+
+    def _n_test(self):
+        return len(self.data)
+
+    def _rate_above_threshold(self):
+        rates = []
+        z_height = []
+        for test, curr_z, threshold in self.data:
+            for x, y, z in test:
+                rates.append(sum(z > threshold) / z.size)
+            z_height.append(curr_z)
+        return rates
+
+    def plot(self):
+        rates_above_tr = self._rate_above_threshold()
+        pass
 
 
 class ResonanceZProbe:
@@ -71,7 +99,6 @@ class ResonanceZProbe:
     def hold_z_freq(self, gcmd, seconds, freq):
         """holds a resonance for N seconds
         resonance code taken from klipper's test_resonances command"""
-        end = datetime.datetime.now() + datetime.timedelta(seconds=seconds)
         axis = TestZ()
         toolhead = self.printer.lookup_object("toolhead")
         X, Y, Z, E = toolhead.get_position()
@@ -109,23 +136,21 @@ class ResonanceZProbe:
         toolhead.manual_move(self.probe_points, 50.0)
         toolhead.wait_moves()
         toolhead.dwell(0.500)
-
-        raw_values = []
         chip_axis, chip = self.accel_chips
         aclient = chip.start_internal_client()
-        raw_values.append(("z", aclient, chip.name))
+        aclient.msg = []
+        aclient.samples = []
         self.hold_z_freq(gcmd, self.test_time, self.z_freq)
         timestamps = []
         x_data = []
         y_data = []
         z_data = []
-        for chip_axis, aclient, chip_name in raw_values:
-            aclient.finish_measurements()
-            for t, accel_x, accel_y, accel_z in aclient.get_samples():
-                timestamps.append(t)
-                x_data.append(accel_x)
-                y_data.append(accel_y)
-                z_data.append(accel_z)
+        aclient.finish_measurements()
+        for t, accel_x, accel_y, accel_z in aclient.get_samples():
+            timestamps.append(t)
+            x_data.append(accel_x)
+            y_data.append(accel_y)
+            z_data.append(accel_z)
         t = np.asarray(timestamps)
         x = np.asarray(x_data)
         y = np.asarray(y_data)
@@ -137,7 +162,8 @@ class ResonanceZProbe:
         x = x - np.median(x)
         y = y - np.median(y)
         z = z - np.median(z)
-        fourier_series = np.fft.fft(z)
+        rate_above_tr = sum(z > self.amp_threshold) / len(timestamps)
+        fourier_series = np.log10(np.fft.fft(z).real)
         gcmd.respond_info(
             "normalize %i samples, median values x: %i y: %i z: %i"
             % (len(timestamps), np.median(x), np.median(y), np.median(z))
@@ -147,6 +173,8 @@ class ResonanceZProbe:
             % (timestamps[len(timestamps) - 1] - timestamps[0])
         )
         gcmd.respond_info("Max amplitude: %s" % np.nanmax(fourier_series))
+        gcmd.respond_info("Rate above threshold: %s" % rate_above_tr)
+        return TestPoint((x, y, z), self.probe_points[2], self.amp_threshold)
 
     def babystep_probe(self, gcmd):
         """
@@ -155,11 +183,14 @@ class ResonanceZProbe:
         log stuff in the console
         """
         # move thself.probe_pointe toolhead
-
-        # while self.probe_points[2] >= self.safe_min_z:
-        gcmd.respond_info("Test Z: %s" % self.probe_points[2])
-        self._test(gcmd)
-        # self.probe_points[2] = self.probe_points[2] - self.step_size
+        data_points = []
+        while self.probe_points[2] >= self.safe_min_z:
+            gcmd.respond_info("Test Z: %s" % self.probe_points[2])
+            data_points.append(self._test(gcmd))
+            next_test_z = self.probe_points[2] - self.step_size
+            next_test_pos = (self.probe_points[0], self.probe_points[1], next_test_z)
+            self.probe_points = next_test_pos
+        tap_data = TapResonanceData(data_points)
 
     cmd_CALIBRATE_Z_RESONANCE_help = "Calibrate Z making the bed vibrate while probing with the nozzle and record accelerometer data"
 
