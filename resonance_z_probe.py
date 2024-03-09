@@ -14,9 +14,12 @@ test_time: 3
 
 """
 
+import os
 import collections
 import math
 import numpy as np
+from datetime import datetime
+from matplotlib.backends.backend_pdf import PdfPages
 import matplotlib.pyplot as plt
 
 
@@ -44,31 +47,47 @@ class TestZ:
 
 
 TestPoint = collections.namedtuple(
-    "DataCollection", ("raw_data", "current_z", "threshold")
+    "TestPoint",
+    (
+        "time",
+        "accel_x",
+        "accel_y",
+        "accel_z",
+        "current_z",
+    ),
 )
 
 
 class TapResonanceData:
     def __init__(self, test_points, out_path):
         self.data = test_points
-        self.out_path = out_path
-        pass
+        self.ts = datetime.timestamp(datetime.now())
+        self.pdf_out = os.path.join(out_path, "tap_summary_%s.pdf" % self.ts)
+        self.csv_out = os.path.join(out_path, "tap_summary_%s.csv" % self.ts)
 
     def _n_test(self):
         return len(self.data)
 
-    def _rate_above_threshold(self):
+    def _rate_above_threshold(self, threshold):
         rates = []
         z_height = []
-        for raw_data, curr_z, threshold in self.data:
-            for t, x, y, z in raw_data:
-                rates.append(sum(z > threshold) / z.size)
-            z_height.append(curr_z)
-        return rates
+        for t, x, y, z, curr_z in self.data:
+            rates.append(sum(z > threshold) / z.size)
+        z_height.append(curr_z)
+        return (z_height, rates)
 
     def plot(self):
         rates_above_tr = self._rate_above_threshold()
         pass
+
+    def write_data(self):
+        with open(self.csv_out, "wt") as data_out:
+            data_out.write("#time,accel_x,accel_y,accel_z,z_height\n")
+            for t, x, y, z, curr_z in self.data:
+                for i in range(len(t)):
+                    data_out.write(
+                        "%.6f,%.6f,%.6f,%.6f,%.6f\n" % (t[i], x[i], y[i], z[i], curr_z)
+                    )
 
 
 class ResonanceZProbe:
@@ -173,9 +192,7 @@ class ResonanceZProbe:
         )
         gcmd.respond_info("Max amplitude: %s" % np.nanmax(fourier_series))
         gcmd.respond_info("Rate above threshold: %s" % rate_above_tr)
-        return TestPoint(
-            (timestamps, x, y, z), self.probe_points[2], self.amp_threshold
-        )
+        return TestPoint(timestamps, x, y, z, self.probe_points[2])
 
     def babystep_probe(self, gcmd):
         """
@@ -191,7 +208,8 @@ class ResonanceZProbe:
             next_test_z = self.probe_points[2] - self.step_size
             next_test_pos = (self.probe_points[0], self.probe_points[1], next_test_z)
             self.probe_points = next_test_pos
-        tap_data = TapResonanceData(data_points, "~/printer_data/logs/plots")
+        tap_data = TapResonanceData(data_points, "/tmp")
+        tap_data.write_data()
 
     cmd_CALIBRATE_Z_RESONANCE_help = "Calibrate Z making the bed vibrate while probing with the nozzle and record accelerometer data"
 
