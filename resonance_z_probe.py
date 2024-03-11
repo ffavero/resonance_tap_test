@@ -102,7 +102,7 @@ class ResonanceZProbe:
         self.amp_threshold = config.getfloat("amplitude_threshold", 700.0, above=500.0)
         self.safe_min_z = config.getfloat("safe_min_z", 1)
 
-        self.test_time = config.getint("test_time", 3.0, minval=1, maxval=10)
+        self.cycle_per_test = config.getint("cycle_per_test", 50, minval=2, maxval=500)
         self.probe_points = config.getfloatlist("probe_points", sep=",", count=3)
         self.accel_chip_name = config.get("accel_chip").strip()
         self.gcode.register_command(
@@ -115,7 +115,7 @@ class ResonanceZProbe:
     def connect(self):
         self.accel_chips = ("z", self.printer.lookup_object(self.accel_chip_name))
 
-    def hold_z_freq(self, gcmd, seconds, freq):
+    def hold_z_freq(self, gcmd, cycles, freq):
         """holds a resonance for N seconds
         resonance code taken from klipper's test_resonances command"""
         axis = TestZ()
@@ -125,21 +125,21 @@ class ResonanceZProbe:
         input_shaper = self.printer.lookup_object("input_shaper", None)
         if input_shaper is not None and not gcmd.get_int("INPUT_SHAPING", 0):
             input_shaper.disable_shaping()
-            gcmd.respond_info("Disabled [input_shaper] for resonance holding")
+            # gcmd.respond_info("Disabled [input_shaper] for resonance holding")
         else:
             input_shaper = None
-        gcmd.respond_info("starting freq %i for %i seconds" % (freq, seconds))
         t_seg = 0.25 / freq
-        max_moves = seconds / t_seg / 2
         count_moves = 0
-        while count_moves <= max_moves:
-            accel = self.accel_per_hz * freq
-            max_v = accel * t_seg
-            toolhead.cmd_M204(
-                self.gcode.create_gcode_command("M204", "M204", {"S": accel})
-            )
-            L = 0.5 * accel * t_seg**2
-            dX, dY, dZ = axis.get_point(L)
+        accel = self.accel_per_hz * freq
+        max_v = accel * t_seg
+        toolhead.cmd_M204(self.gcode.create_gcode_command("M204", "M204", {"S": accel}))
+        L = 0.5 * accel * t_seg**2
+        dX, dY, dZ = axis.get_point(L)
+        gcmd.respond_info(
+            "moving at freq %i for %i cycles. Z moves by: %s" % (freq, cycles, dZ)
+        )
+
+        while count_moves <= cycles:
             nX = X + sign * dX
             nY = Y + sign * dY
             nZ = Z + sign * dZ
@@ -147,7 +147,6 @@ class ResonanceZProbe:
             toolhead.move([X, Y, Z, E], max_v)
             sign = -sign
             count_moves += 1
-        gcmd.respond_info("DONE")
 
     def _test(self, gcmd):
         toolhead = self.printer.lookup_object("toolhead")
@@ -159,7 +158,7 @@ class ResonanceZProbe:
         aclient = chip.start_internal_client()
         aclient.msg = []
         aclient.samples = []
-        self.hold_z_freq(gcmd, self.test_time, self.z_freq)
+        self.hold_z_freq(gcmd, self.cycle_per_test, self.z_freq)
         timestamps = []
         x_data = []
         y_data = []
@@ -173,26 +172,19 @@ class ResonanceZProbe:
         x = np.asarray(x_data)
         y = np.asarray(y_data)
         z = np.asarray(z_data)
-        gcmd.respond_info(
-            "Received %i samples, median values x: %i y: %i z: %i"
-            % (len(timestamps), np.median(x), np.median(y), np.median(z))
-        )
         x = x - np.median(x)
         y = y - np.median(y)
         z = z - np.median(z)
-        rate_above_tr = sum(z > self.amp_threshold) / len(timestamps)
-        fourier_series = np.log10(np.fft.fft(z).real)
+        rate_above_tr = sum(
+            np.logical_or(z > self.amp_threshold, z < (-1 * self.amp_threshold))
+        ) / len(timestamps)
+        test_time = timestamps[len(timestamps) - 1] - timestamps[0]
+        cur_z = self.probe_points[2]
         gcmd.respond_info(
-            "normalize %i samples, median values x: %i y: %i z: %i"
-            % (len(timestamps), np.median(x), np.median(y), np.median(z))
+            "Testing Z: %.4f. Received %i samples in %.2f seconds. Percentage above threshold: %.1f%%"
+            % (cur_z, len(timestamps), test_time, 100 * rate_above_tr)
         )
-        gcmd.respond_info(
-            "The test lasted %s seconds"
-            % (timestamps[len(timestamps) - 1] - timestamps[0])
-        )
-        gcmd.respond_info("Max amplitude: %s" % np.nanmax(fourier_series))
-        gcmd.respond_info("Rate above threshold: %s" % rate_above_tr)
-        return TestPoint(timestamps, x, y, z, self.probe_points[2])
+        return TestPoint(timestamps, x, y, z, cur_z)
 
     def babystep_probe(self, gcmd):
         """
@@ -203,7 +195,6 @@ class ResonanceZProbe:
         # move thself.probe_pointe toolhead
         data_points = []
         while self.probe_points[2] >= self.safe_min_z:
-            gcmd.respond_info("Test Z: %s" % self.probe_points[2])
             data_points.append(self._test(gcmd))
             next_test_z = self.probe_points[2] - self.step_size
             next_test_pos = (self.probe_points[0], self.probe_points[1], next_test_z)
