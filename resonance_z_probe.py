@@ -24,31 +24,64 @@ import collections
 import math
 import numpy as np
 from datetime import datetime
-from matplotlib.backends.backend_pdf import PdfPages
-import matplotlib.pyplot as plt
+
+# from matplotlib.backends.backend_pdf import PdfPages
+# import matplotlib.pyplot as plt
 
 
-class TestZ:
-    def __init__(self):
-        self._name = "axis=%.3f,%.3f,%.3f" % (0.0, 0.0, 1)
+class ZVibrationHelper:
+    """Helper to dynamically manage Z position and movement, including the vibration"""
+
+    def __init__(self, printer, frequency, accel_per_hz) -> None:
+        self.printer = printer
+        self.gcode = self.printer.lookup_object("gcode")
+        self.frequency = frequency
+        self.accel_per_hz = accel_per_hz
         vib_dir = (0.0, 0.0, 1.0)
         s = math.sqrt(sum([d * d for d in vib_dir]))
         self._vib_dir = [d / s for d in vib_dir]
+        self.input_shaper_was_on = False
+        self.input_shaper = None
 
-    def matches(self, chip_axis):
-        if self._vib_dir[0] and "x" in chip_axis:
-            return True
-        if self._vib_dir[1] and "y" in chip_axis:
-            return True
-        if self._vib_dir[2] and "z" in chip_axis:
-            return True
-        return False
-
-    def get_name(self):
-        return self._name
+    def _set_vibration_variables(self):
+        """Calculate the axis coordinate difference to perform the vibration movement"""
+        t_seg = 0.25 / self.frequency
+        accel = self.accel_per_hz * self.frequency
+        self.max_v = accel * t_seg
+        toolhead = self.printer.lookup_object("toolhead")
+        self.cur_x, self.cur_y, self.cur_z, self.cur_e = toolhead.get_position()
+        toolhead.cmd_M204(self.gcode.create_gcode_command("M204", "M204", {"S": accel}))
+        self.movement_span = 0.5 * accel * t_seg**2
+        self.dX, self.dY, self.dZ = self.get_point(self.movement_span)
 
     def get_point(self, l):
         return (self._vib_dir[0] * l, self._vib_dir[1] * l, self._vib_dir[2] * l)
+
+    def _vibrate_(self):
+        toolhead = self.printer.lookup_object("toolhead")
+        for sign in [1, -1]:
+            nX = self.cur_x + sign * self.dX
+            nY = self.cur_y + sign * self.dY
+            nZ = self.cur_z + sign * self.dZ
+            toolhead.move([nX, nY, nZ, self.cur_e], self.max_v)
+            toolhead.move([self.cur_x, self.cur_y, self.cur_z, self.cur_e], self.max_v)
+
+    def disable_input_shaper(self):
+        self.input_shaper = self.printer.lookup_object("input_shaper", None)
+        if self.input_shaper is not None:
+            self.input_shaper.disable_shaping()
+            self.input_shaper_was_on = True
+
+    def restore_input_shaper(self):
+        if self.input_shaper_was_on:
+            self.input_shaper.enable_shaping()
+
+    def vibrate_n(self, n):
+        self._set_vibration_variables()
+        counter = 0
+        while counter <= n:
+            self._vibrate_()
+            counter += 1
 
 
 TestPoint = collections.namedtuple(
@@ -95,6 +128,45 @@ class TapResonanceData:
                     )
 
 
+class OffsetHelper:
+    """
+    Wraps the decision making into the next z position to test, and mark when
+    a z offset was detected successfully
+    """
+
+    def __init__(self, pos, step, min_precision=0.005) -> None:
+
+        self.last_tested_pos = None
+        self.step = step
+        self.last_tested_pos = (pos, False)
+        self.min_precision = min_precision
+        self.current_offset = None
+        self.finished = False
+        self.started = False
+
+    def next_position(self):
+        if self.finished:
+            return self.current_offset
+        else:
+            if self.started is False:
+                return self.last_tested_pos[0]
+            else:
+                pos, status = self.last_tested_pos
+                if status == True:
+                    self.current_offset = pos
+                    if self.step <= self.min_precision:
+                        self.finished = True
+                    return pos + self.step
+                else:
+                    return pos - self.step
+
+    def last_tested_position(self, position, triggered):
+        self.last_tested_pos = (position, triggered)
+        self.started = True
+        if triggered:
+            self.step = self.step / 2.0
+
+
 class ResonanceZProbe:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -116,42 +188,15 @@ class ResonanceZProbe:
             desc=self.cmd_CALIBRATE_Z_RESONANCE_help,
         )
         self.printer.register_event_handler("klippy:connect", self.connect)
+        self.vibration_helper = ZVibrationHelper(
+            self.printer, self.z_freq, self.accel_per_hz
+        )
+        self.vibration_helper.disable_input_shaper()
+        self.debug = True
+        self.data_points = []
 
     def connect(self):
         self.accel_chips = ("z", self.printer.lookup_object(self.accel_chip_name))
-
-    def hold_z_freq(self, gcmd, cycles, freq):
-        """holds a resonance for N seconds
-        resonance code taken from klipper's test_resonances command"""
-        axis = TestZ()
-        toolhead = self.printer.lookup_object("toolhead")
-        X, Y, Z, E = toolhead.get_position()
-        sign = 1.0
-        input_shaper = self.printer.lookup_object("input_shaper", None)
-        if input_shaper is not None and not gcmd.get_int("INPUT_SHAPING", 0):
-            input_shaper.disable_shaping()
-            # gcmd.respond_info("Disabled [input_shaper] for resonance holding")
-        else:
-            input_shaper = None
-        t_seg = 0.25 / freq
-        count_moves = 0
-        accel = self.accel_per_hz * freq
-        max_v = accel * t_seg
-        toolhead.cmd_M204(self.gcode.create_gcode_command("M204", "M204", {"S": accel}))
-        L = 0.5 * accel * t_seg**2
-        dX, dY, dZ = axis.get_point(L)
-        gcmd.respond_info(
-            "moving at freq %i for %i cycles. Z moves by: %s" % (freq, cycles, dZ)
-        )
-
-        while count_moves <= cycles:
-            nX = X + sign * dX
-            nY = Y + sign * dY
-            nZ = Z + sign * dZ
-            toolhead.move([nX, nY, nZ, E], max_v)
-            toolhead.move([X, Y, Z, E], max_v)
-            sign = -sign
-            count_moves += 1
 
     def _test(self, gcmd):
         toolhead = self.printer.lookup_object("toolhead")
@@ -163,7 +208,7 @@ class ResonanceZProbe:
         aclient = chip.start_internal_client()
         aclient.msg = []
         aclient.samples = []
-        self.hold_z_freq(gcmd, self.cycle_per_test, self.z_freq)
+        self.vibration_helper.vibrate_n(self.cycle_per_test)
         timestamps = []
         x_data = []
         y_data = []
@@ -174,22 +219,32 @@ class ResonanceZProbe:
             x_data.append(accel_x)
             y_data.append(accel_y)
             z_data.append(accel_z)
+
         x = np.asarray(x_data)
         y = np.asarray(y_data)
         z = np.asarray(z_data)
         x = x - np.median(x)
         y = y - np.median(y)
         z = z - np.median(z)
-        rate_above_tr = sum(
-            np.logical_or(z > self.amp_threshold, z < (-1 * self.amp_threshold))
-        ) / len(timestamps)
-        test_time = timestamps[len(timestamps) - 1] - timestamps[0]
+        try:
+            rate_above_tr = sum(
+                np.logical_or(z > self.amp_threshold, z < (-1 * self.amp_threshold))
+            ) / len(timestamps)
+        except ZeroDivisionError:
+            rate_above_tr = 0
         cur_z = self.probe_points[2]
-        gcmd.respond_info(
-            "Testing Z: %.4f. Received %i samples in %.2f seconds. Percentage above threshold: %.1f%%"
-            % (cur_z, len(timestamps), test_time, 100 * rate_above_tr)
-        )
-        return TestPoint(timestamps, x, y, z, cur_z)
+        if len(timestamps) > 0:
+            test_time = timestamps[len(timestamps) - 1] - timestamps[0]
+        else:
+            test_time = 0
+        if self.debug:
+            gcmd.respond_info(
+                "Testing Z: %.4f. Received %i samples in %.2f seconds. Percentage above threshold: %.1f%%"
+                % (cur_z, len(timestamps), test_time, 100 * rate_above_tr)
+            )
+        if self.debug:
+            self.data_points.append(TestPoint(timestamps, x, y, z, cur_z))
+        return rate_above_tr
 
     def babystep_probe(self, gcmd):
         """
@@ -198,14 +253,35 @@ class ResonanceZProbe:
         log stuff in the console
         """
         # move thself.probe_pointe toolhead
-        data_points = []
+        test_results = []
+        self.offset_helper = OffsetHelper(self.probe_points[2], self.step_size, 0.005)
+
         while self.probe_points[2] >= self.safe_min_z:
-            data_points.append(self._test(gcmd))
-            next_test_z = self.probe_points[2] - self.step_size
+            if self.offset_helper.finished:
+                break
+            results = self._test(gcmd)
+            self.offset_helper.last_tested_position(
+                self.probe_points[2], results >= 0.01
+            )
+            test_results.append((self.probe_points[2], results))
+            next_test_z = self.offset_helper.next_position()
             next_test_pos = (self.probe_points[0], self.probe_points[1], next_test_z)
             self.probe_points = next_test_pos
-        tap_data = TapResonanceData(data_points, "/tmp")
-        tap_data.write_data()
+        # for res in test_results:
+        #     gcmd.respond_info("Z:%.4f percentage outside threshold %.2f%%" % res)
+        if self.offset_helper.finished:
+            gcmd.respond_info(
+                "probe at %.4f,%.4f  is z=%.6f"
+                % (
+                    self.probe_points[0],
+                    self.probe_points[1],
+                    self.offset_helper.current_offset,
+                )
+            )
+
+        if self.debug:
+            tap_data = TapResonanceData(self.data_points, "/tmp")
+            tap_data.write_data()
 
     cmd_CALIBRATE_Z_RESONANCE_help = "Calibrate Z making the bed vibrate while probing with the nozzle and record accelerometer data"
 
