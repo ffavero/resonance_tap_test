@@ -1,16 +1,21 @@
 """
+RESONANCE Z PROBE
 
+Copyright (C) 2024  Francesco Favero
 
-example config
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
 
-[resonance_z_probe]
-accel_chip: adxl345
-babystep: 0.01
-z_vibration_freq: 180
-amplitude_threshold: 700
-probe_points: 125, 125, 5
-safe_min_z: 0.05
-test_time: 3
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 
 """
 
