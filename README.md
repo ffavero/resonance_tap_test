@@ -25,10 +25,12 @@ This klipper extension, `resonance_z_probe.py`, is designed to operate a resonan
 ```yaml
 [resonance_z_probe]
 accel_chip: adxl345
-babystep: 0.01
+step_size: 0.01
+samples_tolerance: 0.002
 accel_per_hz: 75
 z_vibration_freq: 200
 amplitude_threshold: 550
+rate_above_threshold: 0.01
 probe_points: 80, 150, 0.3
 safe_min_z: 0.15
 cycle_per_test: 20

@@ -29,6 +29,18 @@ from datetime import datetime
 # import matplotlib.pyplot as plt
 
 
+TestPoint = collections.namedtuple(
+    "TestPoint",
+    (
+        "time",
+        "accel_x",
+        "accel_y",
+        "accel_z",
+        "current_z",
+    ),
+)
+
+
 class ZVibrationHelper:
     """Helper to dynamically manage Z position and movement, including the vibration"""
 
@@ -82,18 +94,6 @@ class ZVibrationHelper:
         while counter <= n:
             self._vibrate_()
             counter += 1
-
-
-TestPoint = collections.namedtuple(
-    "TestPoint",
-    (
-        "time",
-        "accel_x",
-        "accel_y",
-        "accel_z",
-        "current_z",
-    ),
-)
 
 
 class TapResonanceData:
@@ -169,19 +169,30 @@ class OffsetHelper:
 
 class ResonanceZProbe:
     def __init__(self, config):
-        self.printer = config.get_printer()
+        self.config = config
+        self.printer = self.config.get_printer()
         self.gcode = self.printer.lookup_object("gcode")
         # consider that accel_per_hz * freq might be caped to the printer max accel
-        self.accel_per_hz = config.getfloat("accel_per_hz", 1.5, above=0.0)
+        self.accel_per_hz = self.config.getfloat("accel_per_hz", 1.5, above=0.0)
 
-        self.step_size = config.getfloat("babystep", 0.01, minval=0.005)
-        self.z_freq = config.getfloat("z_vibration_freq", 80, minval=50.0, maxval=200.0)
-        self.amp_threshold = config.getfloat("amplitude_threshold", 700.0, above=500.0)
-        self.safe_min_z = config.getfloat("safe_min_z", 1)
+        self.step_size = self.config.getfloat("step_size", 0.01, minval=0.005)
+        self.tolerance = config.getfloat("samples_tolerance", None, above=0.0)
+        self.z_freq = self.config.getfloat(
+            "z_vibration_freq", 80, minval=50.0, maxval=200.0
+        )
+        self.amp_threshold = self.config.getfloat(
+            "amplitude_threshold", 700.0, above=500.0
+        )
+        self.rate_above_threshold = self.config.getfloat(
+            "rate_above_threshold", 0.015, minval=0.0, maxval=1.0
+        )
+        self.safe_min_z = self.config.getfloat("safe_min_z", 1)
+        self.probe_points = self.config.getfloatlist("probe_points", sep=",", count=3)
 
-        self.cycle_per_test = config.getint("cycle_per_test", 50, minval=2, maxval=500)
-        self.probe_points = config.getfloatlist("probe_points", sep=",", count=3)
-        self.accel_chip_name = config.get("accel_chip").strip()
+        self.cycle_per_test = self.config.getint(
+            "cycle_per_test", 50, minval=2, maxval=500
+        )
+        self.accel_chip_name = self.config.get("accel_chip").strip()
         self.gcode.register_command(
             "CALIBRATE_Z_RESONANCE",
             self.cmd_CALIBRATE_Z_RESONANCE,
@@ -198,17 +209,65 @@ class ResonanceZProbe:
     def connect(self):
         self.accel_chips = ("z", self.printer.lookup_object(self.accel_chip_name))
 
-    def _test(self, gcmd):
-        toolhead = self.printer.lookup_object("toolhead")
+    cmd_CALIBRATE_Z_RESONANCE_help = "Calibrate Z making the bed vibrate while probing with the nozzle and record accelerometer data"
 
+    def cmd_CALIBRATE_Z_RESONANCE(self, gcmd):
+        self.babystep_probe(gcmd)
+
+    def babystep_probe(self, gcmd):
+        """
+        move to the test position, start recording acc while resonate z, measure the amplitude and compare with the amp_threshold.
+        lower by babystep until min safe Z is reached or the amp_threshold is passed.
+        log stuff in the console
+        """
+        # move thself.probe_pointe toolhead
+        test_results = []
+        self.offset_helper = OffsetHelper(
+            self.probe_points[2], self.step_size, self.tolerance
+        )
+        toolhead = self.printer.lookup_object("toolhead")
         toolhead.manual_move(self.probe_points, 50.0)
         toolhead.wait_moves()
         toolhead.dwell(0.500)
-        chip_axis, chip = self.accel_chips
+        self.vibration_helper._set_vibration_variables()
+        curr_z = self.probe_points[2]
+        while curr_z >= self.safe_min_z:
+            if self.offset_helper.finished:
+                break
+            results = self._test(gcmd, curr_z)
+            self.offset_helper.last_tested_position(
+                curr_z, results >= self.rate_above_threshold
+            )
+            test_results.append((self.probe_points[2], results))
+            self.vibration_helper.cur_z = self.offset_helper.next_position()
+            curr_z = self.vibration_helper.cur_z
+
+        # for res in test_results:
+        #     gcmd.respond_info("Z:%.4f percentage outside threshold %.2f%%" % res)
+        if self.offset_helper.finished:
+            gcmd.respond_info(
+                "probe at %.4f,%.4f  is z=%.6f"
+                % (
+                    self.probe_points[0],
+                    self.probe_points[1],
+                    self.offset_helper.current_offset,
+                )
+            )
+
+        if self.debug:
+            tap_data = TapResonanceData(self.data_points, "/tmp")
+            tap_data.write_data()
+
+    def _test(self, gcmd, curr_z):
+
+        chip = self.accel_chips[1]
         aclient = chip.start_internal_client()
         aclient.msg = []
         aclient.samples = []
-        self.vibration_helper.vibrate_n(self.cycle_per_test)
+        cycle_counter = 0
+        while cycle_counter <= self.cycle_per_test:
+            self.vibration_helper._vibrate_()
+            cycle_counter += 1
         timestamps = []
         x_data = []
         y_data = []
@@ -232,61 +291,18 @@ class ResonanceZProbe:
             ) / len(timestamps)
         except ZeroDivisionError:
             rate_above_tr = 0
-        cur_z = self.probe_points[2]
-        if len(timestamps) > 0:
-            test_time = timestamps[len(timestamps) - 1] - timestamps[0]
-        else:
-            test_time = 0
+
         if self.debug:
+            if len(timestamps) > 0:
+                test_time = timestamps[len(timestamps) - 1] - timestamps[0]
+            else:
+                test_time = 0
             gcmd.respond_info(
                 "Testing Z: %.4f. Received %i samples in %.2f seconds. Percentage above threshold: %.1f%%"
-                % (cur_z, len(timestamps), test_time, 100 * rate_above_tr)
+                % (curr_z, len(timestamps), test_time, 100 * rate_above_tr)
             )
-        if self.debug:
-            self.data_points.append(TestPoint(timestamps, x, y, z, cur_z))
+            self.data_points.append(TestPoint(timestamps, x, y, z, curr_z))
         return rate_above_tr
-
-    def babystep_probe(self, gcmd):
-        """
-        move to the test position, start recording acc while resonate z, measure the amplitude and compare with the amp_threshold.
-        lower by babystep until min safe Z is reached or the amp_threshold is passed.
-        log stuff in the console
-        """
-        # move thself.probe_pointe toolhead
-        test_results = []
-        self.offset_helper = OffsetHelper(self.probe_points[2], self.step_size, 0.005)
-
-        while self.probe_points[2] >= self.safe_min_z:
-            if self.offset_helper.finished:
-                break
-            results = self._test(gcmd)
-            self.offset_helper.last_tested_position(
-                self.probe_points[2], results >= 0.01
-            )
-            test_results.append((self.probe_points[2], results))
-            next_test_z = self.offset_helper.next_position()
-            next_test_pos = (self.probe_points[0], self.probe_points[1], next_test_z)
-            self.probe_points = next_test_pos
-        # for res in test_results:
-        #     gcmd.respond_info("Z:%.4f percentage outside threshold %.2f%%" % res)
-        if self.offset_helper.finished:
-            gcmd.respond_info(
-                "probe at %.4f,%.4f  is z=%.6f"
-                % (
-                    self.probe_points[0],
-                    self.probe_points[1],
-                    self.offset_helper.current_offset,
-                )
-            )
-
-        if self.debug:
-            tap_data = TapResonanceData(self.data_points, "/tmp")
-            tap_data.write_data()
-
-    cmd_CALIBRATE_Z_RESONANCE_help = "Calibrate Z making the bed vibrate while probing with the nozzle and record accelerometer data"
-
-    def cmd_CALIBRATE_Z_RESONANCE(self, gcmd):
-        self.babystep_probe(gcmd)
 
 
 def load_config(config):
