@@ -25,8 +25,10 @@ import math
 import numpy as np
 from datetime import datetime
 
-# from matplotlib.backends.backend_pdf import PdfPages
-# import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib import font_manager
+import matplotlib.pyplot as plt
+from textwrap import wrap
 
 
 TestPoint = collections.namedtuple(
@@ -97,8 +99,9 @@ class ZVibrationHelper:
 
 
 class TapResonanceData:
-    def __init__(self, test_points, out_path):
+    def __init__(self, test_points, out_path, gcmd):
         self.data = test_points
+        self.gcmd = gcmd
         self.ts = datetime.timestamp(datetime.now())
         self.pdf_out = os.path.join(out_path, "tap_summary_%s.pdf" % self.ts)
         self.csv_out = os.path.join(out_path, "tap_summary_%s.csv" % self.ts)
@@ -110,15 +113,39 @@ class TapResonanceData:
         rates = []
         z_height = []
         for t, x, y, z, curr_z in self.data:
-            rates.append(sum(z > threshold) / z.size)
-        z_height.append(curr_z)
+
+            rate_above_tr = sum(
+                np.logical_or(z > threshold, z < (-1 * threshold))
+            ) / len(t)
+            rates.append(rate_above_tr)
+            z_height.append(curr_z)
         return (z_height, rates)
 
-    def plot(self):
-        rates_above_tr = self._rate_above_threshold()
-        pass
+    def plot(self, threshold, cycles):
+        rates_above_tr = self._rate_above_threshold(threshold)
+        self.gcmd.respond_info("writing debug plots to %s" % self.pdf_out)
+
+        with PdfPages(self.pdf_out) as pdf:
+
+            plt.plot(
+                rates_above_tr[0],
+                rates_above_tr[1],
+                linestyle="-",
+                marker="o",
+            )
+            fontP = font_manager.FontProperties()
+            fontP.set_size("x-small")
+            plt.xlabel("Z height")
+            plt.ylabel("Rate of points above threshold")
+            pdf.savefig(facecolor="white")
+            plt.close()
+            for z_test in rates_above_tr[0]:
+                acc_plot = self.plot_accel(z_test, cycles, threshold)
+                pdf.savefig(acc_plot, facecolor="white")
+                plt.close()
 
     def write_data(self):
+        self.gcmd.respond_info("writing data to %s" % self.csv_out)
         with open(self.csv_out, "wt") as data_out:
             data_out.write("#time,accel_x,accel_y,accel_z,z_height\n")
             for t, x, y, z, curr_z in self.data:
@@ -126,6 +153,48 @@ class TapResonanceData:
                     data_out.write(
                         "%.6f,%.6f,%.6f,%.6f,%.6f\n" % (t[i], x[i], y[i], z[i], curr_z)
                     )
+
+    def plot_accel(self, z_height, cycles, threshold):
+        data = None
+        for t, x, y, z, curr_z in self.data:
+            if curr_z == z_height:
+                data = np.array((t, x, y, z))
+        if data is None:
+            self.gcmd.respond_info("No corresponding z_height found")
+            return None
+        logname = "%.4f" % z_height
+        fig, axes = plt.subplots(nrows=3, sharex=True)
+        axes[0].set_title("\n".join(wrap("Accelerometer data z=%s" % logname, 15)))
+        axis_names = ["Expected taps", "z-accel", "both"]
+        first_time = data[0, 0]
+        times = data[0, :] - first_time
+        time_span = times[-1]
+        expect_freq = cycles / time_span
+        prob_wave = np.sin(2 * np.pi * expect_freq * times)
+        prob_wave[prob_wave < 0] = 0
+        ax = axes[0]
+        ax.plot(times, prob_wave, alpha=0.8, label="Expected taps")
+        # times = data[:, 0]
+        adata = data[3, :]
+        ax = axes[1]
+        label = "\n".join(wrap(logname, 60))
+        ax.plot(times, adata, alpha=0.8, label="z")
+        ax.axhline(y=threshold, linestyle="--", lw=2, label="threshold", color="red")
+        ax.axhline(y=-1 * threshold, linestyle="--", lw=2, color="red")
+        ax = axes[2]
+        ax.plot(times, adata * prob_wave, alpha=0.8, label="normalized")
+        ax.axhline(y=threshold, linestyle="--", lw=2, label="threshold", color="red")
+        ax.axhline(y=-1 * threshold, linestyle="--", lw=2, color="red")
+        axes[-1].set_xlabel("Time (s)")
+        fontP = font_manager.FontProperties()
+        fontP.set_size("x-small")
+        for i in range(len(axis_names)):
+            ax = axes[i]
+            ax.grid(True)
+            ax.legend(loc="best", prop=fontP)
+            ax.set_ylabel("%s" % (axis_names[i],))
+        fig.tight_layout()
+        return fig
 
 
 class OffsetHelper:
@@ -255,8 +324,9 @@ class ResonanceZProbe:
             )
 
         if self.debug:
-            tap_data = TapResonanceData(self.data_points, "/tmp")
+            tap_data = TapResonanceData(self.data_points, "/tmp", gcmd)
             tap_data.write_data()
+            tap_data.plot(self.amp_threshold, self.cycle_per_test)
 
     def _test(self, gcmd, curr_z):
 
