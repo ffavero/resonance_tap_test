@@ -423,7 +423,7 @@ class ResonanceZProbe:
         self.vibration_helper = ZVibrationHelper(
             self.printer, self.z_freq, self.accel_per_hz
         )
- 
+
         self.debug = 0
         self.dump = 0
         self.data_points = []
@@ -522,13 +522,13 @@ class ResonanceZProbe:
         x = x - np.median(x)
         y = y - np.median(y)
         z = z - np.median(z)
-        calibration_data = calc_freq_response(np.array((
-            timestamps, x, y, z)))
+        calibration_data = calc_freq_response(np.array((timestamps, x, y, z)))
         freqs = calibration_data.freq_bins
         psd_sums = (
             np.sum(calibration_data.psd_x[freqs >= 80]),
             np.sum(calibration_data.psd_y[freqs >= 80]),
-            np.sum(calibration_data.psd_z[freqs >= 80]))
+            np.sum(calibration_data.psd_z[freqs >= 80]),
+        )
         z_psd_is_max = np.argmax(psd_sums) == 2
         try:
             rate_above_tr = sum(
@@ -540,14 +540,31 @@ class ResonanceZProbe:
         if self.debug == 1:
             if len(timestamps) > 0:
                 test_time = timestamps[len(timestamps) - 1] - timestamps[0]
+                actual_freq = self.cycle_per_test / test_time
             else:
                 test_time = 0
+                actual_freq = 0
+            actual_vel = self.vibration_helper.movement_span * (2 * np.pi * actual_freq)
+            actual_accel = actual_vel * (2 * np.pi * actual_freq)
+
+            self.vibration_helper.movement_span
             gcmd.respond_info(
                 "Testing Z: %.4f. Received %i samples in %.2f seconds. Percentage above threshold: %.1f%%"
                 % (curr_z, len(timestamps), test_time, 100 * rate_above_tr)
             )
             gcmd.respond_info(
-                "psd sums x: %.3f y: %.3f z: %.3f" % psd_sums)
+                "Performed: %i Z-vibration in %.2f seconds. Vibration of %.4f mm of movement span, "
+                "at actual frequency %.2fHz, actual acceleration %.4f and velocity %.4f"
+                % (
+                    self.cycle_per_test,
+                    test_time,
+                    self.vibration_helper.movement_span,
+                    actual_freq,
+                    actual_vel,
+                    actual_accel,
+                )
+            )
+            gcmd.respond_info("psd sums x: %.3f y: %.3f z: %.3f" % psd_sums)
         if self.dump:
             self.data_points.append(TestPoint(timestamps, x, y, z, curr_z))
         return (rate_above_tr, z_psd_is_max)
