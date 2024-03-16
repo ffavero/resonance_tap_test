@@ -443,8 +443,8 @@ class ResonanceZProbe:
         lower by babystep until min safe Z is reached or the amp_threshold is passed.
         log stuff in the console
         """
-        if input_shaper is not None:
-            input_shaper.disable_shaping()
+        if self.input_shaper is not None:
+            self.input_shaper.disable_shaping()
 
         self.debug = gcmd.get_int("DEBUG", 0, minval=0, maxval=1)
         self.dump = gcmd.get_int("DUMP", 0, minval=0, maxval=1)
@@ -492,8 +492,8 @@ class ResonanceZProbe:
             tap_data.plot(self.amp_threshold, self.cycle_per_test)
             self.data_points = []
 
-        if input_shaper is not None:
-            input_shaper.enable_shaping()
+        if self.input_shaper is not None:
+            self.input_shaper.enable_shaping()
 
     def _test(self, gcmd, curr_z):
 
