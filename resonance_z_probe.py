@@ -174,8 +174,6 @@ class ZVibrationHelper:
         vib_dir = (0.0, 0.0, 1.0)
         s = math.sqrt(sum([d * d for d in vib_dir]))
         self._vib_dir = [d / s for d in vib_dir]
-        self.input_shaper_was_on = False
-        self.input_shaper = None
 
     def _set_vibration_variables(self):
         """Calculate the axis coordinate difference to perform the vibration movement"""
@@ -199,16 +197,6 @@ class ZVibrationHelper:
             nZ = self.cur_z + sign * self.dZ
             toolhead.move([nX, nY, nZ, self.cur_e], self.max_v)
             toolhead.move([self.cur_x, self.cur_y, self.cur_z, self.cur_e], self.max_v)
-
-    def disable_input_shaper(self):
-        self.input_shaper = self.printer.lookup_object("input_shaper", None)
-        if self.input_shaper is not None:
-            self.input_shaper.disable_shaping()
-            self.input_shaper_was_on = True
-
-    def restore_input_shaper(self):
-        if self.input_shaper_was_on:
-            self.input_shaper.enable_shaping()
 
     def vibrate_n(self, n):
         self._set_vibration_variables()
@@ -431,15 +419,17 @@ class ResonanceZProbe:
             desc=self.cmd_CALIBRATE_Z_RESONANCE_help,
         )
         self.printer.register_event_handler("klippy:connect", self.connect)
+
         self.vibration_helper = ZVibrationHelper(
             self.printer, self.z_freq, self.accel_per_hz
         )
-        self.vibration_helper.disable_input_shaper()
+ 
         self.debug = 0
         self.dump = 0
         self.data_points = []
 
     def connect(self):
+        self.input_shaper = self.printer.lookup_object("input_shaper", None)
         self.accel_chips = ("z", self.printer.lookup_object(self.accel_chip_name))
 
     cmd_CALIBRATE_Z_RESONANCE_help = "Calibrate Z making the bed vibrate while probing with the nozzle and record accelerometer data"
@@ -453,6 +443,9 @@ class ResonanceZProbe:
         lower by babystep until min safe Z is reached or the amp_threshold is passed.
         log stuff in the console
         """
+        if input_shaper is not None:
+            input_shaper.disable_shaping()
+
         self.debug = gcmd.get_int("DEBUG", 0, minval=0, maxval=1)
         self.dump = gcmd.get_int("DUMP", 0, minval=0, maxval=1)
         self.safe_min_z = gcmd.get_float("SAFE_Z", self.safe_min_z)
@@ -498,6 +491,9 @@ class ResonanceZProbe:
             tap_data.write_data()
             tap_data.plot(self.amp_threshold, self.cycle_per_test)
             self.data_points = []
+
+        if input_shaper is not None:
+            input_shaper.enable_shaping()
 
     def _test(self, gcmd, curr_z):
 
