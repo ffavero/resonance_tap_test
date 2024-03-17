@@ -420,10 +420,6 @@ class ResonanceZProbe:
         )
         self.printer.register_event_handler("klippy:connect", self.connect)
 
-        self.vibration_helper = ZVibrationHelper(
-            self.printer, self.z_freq, self.accel_per_hz
-        )
-
         self.debug = 0
         self.dump = 0
         self.data_points = []
@@ -452,6 +448,10 @@ class ResonanceZProbe:
         x_pos = gcmd.get_float("X_POS", self.probe_points[0])
         y_pos = gcmd.get_float("Y_POS", self.probe_points[1])
         z_pos = gcmd.get_float("Z_POS", self.probe_points[2], minval=self.safe_min_z)
+        self.accel_per_hz = gcmd.get_float("ACCEL_PER_HZ", self.accel_per_hz)
+        self.z_freq = gcmd.get_float("Z_VIBRATION_FREQ", self.z_freq)
+        self.amp_threshold = gcmd.get_float("AMP_THRESHOLD", self.amp_threshold)
+        self.cycle_per_test = gcmd.get_float("CYCLE_PER_TEST", self.cycle_per_test)
         self.probe_points = (x_pos, y_pos, z_pos)
         test_results = []
         self.offset_helper = OffsetHelper(
@@ -461,6 +461,9 @@ class ResonanceZProbe:
         toolhead.manual_move(self.probe_points, 50.0)
         toolhead.wait_moves()
         toolhead.dwell(0.500)
+        self.vibration_helper = ZVibrationHelper(
+            self.printer, self.z_freq, self.accel_per_hz
+        )
         self.vibration_helper._set_vibration_variables()
         curr_z = self.probe_points[2]
         while curr_z >= self.safe_min_z:
