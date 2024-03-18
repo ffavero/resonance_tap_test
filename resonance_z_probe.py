@@ -230,40 +230,50 @@ class TapResonanceData:
         return (z_height, rates)
 
     def plot(self, threshold, cycles):
-        rates_above_tr = self._rate_above_threshold(threshold)
-        self.gcmd.respond_info("writing debug plots to %s" % self.pdf_out)
+        try:
+            rates_above_tr = self._rate_above_threshold(threshold)
+            self.gcmd.respond_info("writing debug plots to %s" % self.pdf_out)
 
-        with PdfPages(self.pdf_out) as pdf:
+            with PdfPages(self.pdf_out) as pdf:
 
-            plt.plot(
-                rates_above_tr[0],
-                rates_above_tr[1],
-                linestyle="-",
-                marker="o",
-            )
-            fontP = font_manager.FontProperties()
-            fontP.set_size("x-small")
-            plt.xlabel("Z height")
-            plt.ylabel("Rate of points above threshold")
-            pdf.savefig(facecolor="white")
-            plt.close()
-            for z_test in rates_above_tr[0]:
-                acc_plot = self.plot_accel(z_test, cycles, threshold)
-                pdf.savefig(acc_plot, facecolor="white")
+                plt.plot(
+                    rates_above_tr[0],
+                    rates_above_tr[1],
+                    linestyle="-",
+                    marker="o",
+                )
+                fontP = font_manager.FontProperties()
+                fontP.set_size("x-small")
+                plt.xlabel("Z height")
+                plt.ylabel("Rate of points above threshold")
+                pdf.savefig(facecolor="white")
                 plt.close()
-                freq_plot = self.plot_frequency(z_test, 200)
-                pdf.savefig(freq_plot, facecolor="white")
-                plt.close()
+                for z_test in rates_above_tr[0]:
+                    raw_plot = self.plot_raw_accel(z_test, threshold)
+                    pdf.savefig(raw_plot, facecolor="white")
+                    plt.close()
+                    acc_plot = self.plot_accel(z_test, cycles, threshold)
+                    pdf.savefig(acc_plot, facecolor="white")
+                    plt.close()
+                    freq_plot = self.plot_frequency(z_test, 200)
+                    pdf.savefig(freq_plot, facecolor="white")
+                    plt.close()
+        except FileNotFoundError:
+            self.gcmd.respond_info(" File %s not found" % self.pdf_out)
 
     def write_data(self):
         self.gcmd.respond_info("writing data to %s" % self.csv_out)
-        with open(self.csv_out, "wt") as data_out:
-            data_out.write("#time,accel_x,accel_y,accel_z,z_height\n")
-            for t, x, y, z, curr_z in self.data:
-                for i in range(len(t)):
-                    data_out.write(
-                        "%.6f,%.6f,%.6f,%.6f,%.6f\n" % (t[i], x[i], y[i], z[i], curr_z)
-                    )
+        try:
+            with open(self.csv_out, "wt") as data_out:
+                data_out.write("#time,accel_x,accel_y,accel_z,z_height\n")
+                for t, x, y, z, curr_z in self.data:
+                    for i in range(len(t)):
+                        data_out.write(
+                            "%.6f,%.6f,%.6f,%.6f,%.6f\n"
+                            % (t[i], x[i], y[i], z[i], curr_z)
+                        )
+        except FileNotFoundError:
+            self.gcmd.respond_info(" File %s not found" % self.csv_out)
 
     def plot_accel(self, z_height, cycles, threshold):
         data = None
@@ -299,6 +309,41 @@ class TapResonanceData:
         ax.plot(times, adata * np.flip(sin_wave), alpha=0.8, label="normalized")
         ax.axhline(y=threshold, linestyle="--", lw=2, label="threshold", color="red")
         ax.axhline(y=-1 * threshold, linestyle="--", lw=2, color="red")
+        axes[-1].set_xlabel("Time (s)")
+        fontP = font_manager.FontProperties()
+        fontP.set_size("x-small")
+        for i in range(len(axis_names)):
+            ax = axes[i]
+            ax.grid(True)
+            ax.legend(loc="best", prop=fontP)
+            ax.set_ylabel("%s" % (axis_names[i],))
+        fig.tight_layout()
+        return fig
+
+    def plot_raw_accel(self, z_height, threshold):
+        data = None
+        for t, x, y, z, curr_z in self.data:
+            if curr_z == z_height:
+                data = np.array((t, x, y, z))
+        if data is None:
+            self.gcmd.respond_info("No corresponding z_height found")
+            return None
+        logname = "%.4f" % z_height
+        fig, axes = plt.subplots(nrows=3, sharex=True)
+        axes[0].set_title("\n".join(wrap("Accelerometer data z=%s" % logname, 15)))
+        axis_names = ["x-accel", "y-accel", "z-accel"]
+        first_time = data[0, 0]
+        times = data[0, :] - first_time
+        # times = data[:, 0]
+        for i in range(len(axis_names)):
+            adata = data[i + 1, :]
+            ax = axes[i]
+            ax.plot(times, adata, alpha=0.8, label=axis_names[i])
+            if i == 2:
+                ax.axhline(
+                    y=threshold, linestyle="--", lw=2, label="threshold", color="red"
+                )
+                ax.axhline(y=-1 * threshold, linestyle="--", lw=2, color="red")
         axes[-1].set_xlabel("Time (s)")
         fontP = font_manager.FontProperties()
         fontP.set_size("x-small")
@@ -418,6 +463,11 @@ class ResonanceZProbe:
             self.cmd_CALIBRATE_Z_RESONANCE,
             desc=self.cmd_CALIBRATE_Z_RESONANCE_help,
         )
+        self.gcode.register_command(
+            "TEST_Z_NOISE",
+            self.cmd_TEST_Z_NOISE,
+            desc=self.cmd_TEST_Z_NOISE_help,
+        )
         self.printer.register_event_handler("klippy:connect", self.connect)
 
         self.debug = 0
@@ -428,10 +478,109 @@ class ResonanceZProbe:
         self.input_shaper = self.printer.lookup_object("input_shaper", None)
         self.accel_chips = ("z", self.printer.lookup_object(self.accel_chip_name))
 
-    cmd_CALIBRATE_Z_RESONANCE_help = "Calibrate Z making the bed vibrate while probing with the nozzle and record accelerometer data"
+    cmd_CALIBRATE_Z_RESONANCE_help = (
+        "Calibrate Z making the bed vibrate while probing with"
+        " the nozzle and record accelerometer data"
+    )
 
     def cmd_CALIBRATE_Z_RESONANCE(self, gcmd):
         self.babystep_probe(gcmd)
+
+    cmd_TEST_Z_NOISE_help = (
+        "Test the background noise level on the toolhead, while vibrating the z axis"
+    )
+
+    def cmd_TEST_Z_NOISE(self, gcmd):
+        x_pos = gcmd.get_float("X_POS", self.probe_points[0])
+        y_pos = gcmd.get_float("Y_POS", self.probe_points[1])
+        z_pos = gcmd.get_float("Z_POS", self.probe_points[2], minval=self.safe_min_z)
+        accel_per_hz = gcmd.get_float("ACCEL_PER_HZ", self.accel_per_hz)
+        z_freq = gcmd.get_float("Z_VIBRATION_FREQ", self.z_freq)
+        amp_threshold = gcmd.get_float("AMP_THRESHOLD", self.amp_threshold)
+        cycle_per_test = gcmd.get_float("CYCLE_PER_TEST", self.cycle_per_test)
+        out_path = gcmd.get("OUT_PATH", "/tmp")
+        if self.input_shaper is not None:
+            self.input_shaper.disable_shaping()
+        toolhead = self.printer.lookup_object("toolhead")
+        toolhead.manual_move((x_pos, y_pos, z_pos), 50.0)
+        toolhead.wait_moves()
+        toolhead.dwell(0.500)
+
+        vibration_helper = ZVibrationHelper(self.printer, z_freq, accel_per_hz)
+        vibration_helper._set_vibration_variables()
+        chip = self.accel_chips[1]
+        aclient = chip.start_internal_client()
+        aclient.msg = []
+        aclient.samples = []
+        cycle_counter = 0
+        while cycle_counter <= cycle_per_test:
+            vibration_helper._vibrate_()
+            cycle_counter += 1
+        timestamps = []
+        x_data = []
+        y_data = []
+        z_data = []
+        aclient.finish_measurements()
+        for t, accel_x, accel_y, accel_z in aclient.get_samples():
+            timestamps.append(t)
+            x_data.append(accel_x)
+            y_data.append(accel_y)
+            z_data.append(accel_z)
+        x = np.asarray(x_data)
+        y = np.asarray(y_data)
+        z = np.asarray(z_data)
+        x = x - np.median(x)
+        y = y - np.median(y)
+        z = z - np.median(z)
+        calibration_data = calc_freq_response(np.array((timestamps, x, y, z)))
+        freqs = calibration_data.freq_bins
+        psd_sums = (
+            np.sum(calibration_data.psd_x[freqs >= 80]),
+            np.sum(calibration_data.psd_y[freqs >= 80]),
+            np.sum(calibration_data.psd_z[freqs >= 80]),
+        )
+        z_psd_is_max = np.argmax(psd_sums) == 2
+        try:
+            rate_above_tr = sum(
+                np.logical_or(z > self.amp_threshold, z < (-1 * self.amp_threshold))
+            ) / len(timestamps)
+        except ZeroDivisionError:
+            rate_above_tr = 0
+
+        if len(timestamps) > 0:
+            test_time = timestamps[len(timestamps) - 1] - timestamps[0]
+            actual_freq = self.cycle_per_test / test_time
+        else:
+            test_time = 0
+            actual_freq = 0
+        actual_vel = vibration_helper.movement_span * (2 * np.pi * actual_freq)
+        actual_accel = actual_vel * (2 * np.pi * actual_freq)
+
+        gcmd.respond_info(
+            "Testing Z: %.4f. Received %i samples in %.2f seconds. Percentage above threshold: %.1f%%"
+            % (z_pos, len(timestamps), test_time, 100 * rate_above_tr)
+        )
+        gcmd.respond_info(
+            "Performed: %i Z-vibration in %.2f seconds. Vibration of %.4f mm of movement span, "
+            "at actual frequency %.2fHz, actual acceleration %.4f and velocity %.4f"
+            % (
+                cycle_per_test,
+                test_time,
+                vibration_helper.movement_span,
+                actual_freq,
+                actual_vel,
+                actual_accel,
+            )
+        )
+        gcmd.respond_info("psd sums x: %.3f y: %.3f z: %.3f" % psd_sums)
+        data_points = TapResonanceData(
+            [TestPoint(timestamps, x, y, z, z_pos)], out_path, gcmd
+        )
+        data_points.write_data()
+        data_points.plot(amp_threshold, cycle_per_test)
+
+        if self.input_shaper is not None:
+            self.input_shaper.enable_shaping()
 
     def babystep_probe(self, gcmd):
         """
@@ -549,8 +698,6 @@ class ResonanceZProbe:
                 actual_freq = 0
             actual_vel = self.vibration_helper.movement_span * (2 * np.pi * actual_freq)
             actual_accel = actual_vel * (2 * np.pi * actual_freq)
-
-            self.vibration_helper.movement_span
             gcmd.respond_info(
                 "Testing Z: %.4f. Received %i samples in %.2f seconds. Percentage above threshold: %.1f%%"
                 % (curr_z, len(timestamps), test_time, 100 * rate_above_tr)
