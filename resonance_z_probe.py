@@ -36,7 +36,7 @@ from textwrap import wrap
 
 MIN_FREQ = 5.0
 MAX_FREQ = 200.0
-WINDOW_T_SEC = 0.1
+# WINDOW_T_SEC = 0.1
 MAX_SHAPER_FREQ = 150.0
 
 
@@ -150,9 +150,16 @@ def calc_freq_response(raw_values):
     N = data.shape[1]
     T = data[0, -1] - data[0, 0]
     SAMPLING_FREQ = N / T
-    # Round up to the nearest power of 2 for faster FFT
-    M = 1 << int(SAMPLING_FREQ * WINDOW_T_SEC - 1).bit_length()
-    if N <= M:
+    WINDOW_T_SEC = [0.5, 0.25, 0.1, 0.05, 0.025, 0.01]
+    M = None
+    for window in WINDOW_T_SEC:
+        # Round up to the nearest power of 2 for faster FFT
+        M_i = 1 << int(SAMPLING_FREQ * window - 1).bit_length()
+
+        if N >= M_i:
+            M = M_i
+            break
+    if M is None:
         return None
 
     # Calculate PSD (power spectral density) of vibrations per
@@ -235,10 +242,11 @@ class TapResonanceData:
             self.gcmd.respond_info("writing debug plots to %s" % self.pdf_out)
 
             with PdfPages(self.pdf_out) as pdf:
+                rates_indx = np.argsort(rates_above_tr[0])
 
                 plt.plot(
-                    rates_above_tr[0],
-                    rates_above_tr[1],
+                    np.sort(rates_above_tr[0]),
+                    np.array(rates_above_tr[1])[rates_indx.astype(int)],
                     linestyle="-",
                     marker="o",
                 )
@@ -252,9 +260,9 @@ class TapResonanceData:
                     raw_plot = self.plot_raw_accel(z_test, threshold)
                     pdf.savefig(raw_plot, facecolor="white")
                     plt.close()
-                    acc_plot = self.plot_accel(z_test, cycles, threshold)
-                    pdf.savefig(acc_plot, facecolor="white")
-                    plt.close()
+                    # acc_plot = self.plot_accel(z_test, cycles, threshold)
+                    # pdf.savefig(acc_plot, facecolor="white")
+                    # plt.close()
                     freq_plot = self.plot_frequency(z_test, 200)
                     pdf.savefig(freq_plot, facecolor="white")
                     plt.close()
@@ -291,9 +299,10 @@ class TapResonanceData:
         times = data[0, :] - first_time
         time_span = times[-1]
         expect_freq = cycles / time_span
+        expect_freq_start = (cycles + 1) / time_span
         sin_wave = np.sin(2 * np.pi * expect_freq * times)
         sin_wave[sin_wave < 0] = 0
-        cos_wave = np.cos(2 * np.pi * expect_freq * times)
+        cos_wave = np.cos(2 * np.pi * expect_freq_start * times)
         cos_wave[cos_wave < 0] = 0
         ax = axes[0]
         ax.plot(times, np.flip(sin_wave), alpha=0.8, label="Expected taps, sin flip")
@@ -369,9 +378,9 @@ class TapResonanceData:
         py = calibration_data.psd_y[freqs <= max_freq]
         pz = calibration_data.psd_z[freqs <= max_freq]
         freqs = freqs[freqs <= max_freq]
-
+        logname = "%.4f" % z_height
         fig, ax = plt.subplots()
-        ax.set_title("\n".join(wrap("Frequency response (%s)" % str(z_height), 15)))
+        ax.set_title("\n".join(wrap("Frequency response (%s)" % logname, 15)))
         ax.set_xlabel("Frequency (Hz)")
         ax.set_ylabel("Power spectral density")
 
