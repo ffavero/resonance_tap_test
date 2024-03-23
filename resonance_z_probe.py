@@ -20,6 +20,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
 import os
+import logging
 import collections
 import math
 import numpy as np
@@ -466,6 +467,10 @@ class ResonanceZProbe:
         self.cycle_per_test = self.config.getint(
             "cycle_per_test", 50, minval=2, maxval=500
         )
+        self.calibration_positions = self.config.getlists(
+            "calibration_points", seps=(",", "\n"), parser=float, count=2
+        )
+
         self.accel_chip_name = self.config.get("accel_chip").strip()
         self.gcode.register_command(
             "CALIBRATE_Z_RESONANCE",
@@ -477,6 +482,12 @@ class ResonanceZProbe:
             self.cmd_TEST_Z_NOISE,
             desc=self.cmd_TEST_Z_NOISE_help,
         )
+        self.gcode.register_command(
+            "CALIBRATE_THRESHOLD",
+            self.cmd_CALIBRATE_THRESHOLD,
+            desc=self.cmd_CALIBRATE_THRESHOLD_help,
+        )
+
         self.printer.register_event_handler("klippy:connect", self.connect)
 
         self.debug = 0
@@ -494,6 +505,59 @@ class ResonanceZProbe:
 
     def cmd_CALIBRATE_Z_RESONANCE(self, gcmd):
         self.babystep_probe(gcmd)
+
+    def calc_accel_limit(self, a, window, n_sd):
+        pad = np.ones(len(a.shape), dtype=np.int32)
+        pad[-1] = window - 1
+        pad = list(zip(pad, np.zeros(len(a.shape), dtype=np.int32)))
+        a = np.pad(a, pad, mode="reflect")
+        shape = a.shape[:-1] + (a.shape[-1] - window + 1, window)
+        strides = a.strides + (a.strides[-1],)
+        r_w = np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides)
+        mid = np.mean(r_w, axis=-1)
+        sd = np.std(r_w, axis=-1)
+        up = mid + (n_sd * sd)
+        return up
+
+    cmd_CALIBRATE_THRESHOLD_help = (
+        "Move the toolhead in different places of the bed "
+        "to calibrate the background noise"
+    )
+
+    def cmd_CALIBRATE_THRESHOLD(self, gcmd):
+        z_pos = self.probe_points[2]
+        timestamps = []
+        x_data = []
+        y_data = []
+        z_data = []
+        vibration_helper = ZVibrationHelper(
+            self.printer, self.z_freq, self.accel_per_hz
+        )
+        vibration_helper._set_vibration_variables()
+
+        for x_pos, y_pos in self.calibration_positions:
+            toolhead = self.printer.lookup_object("toolhead")
+            toolhead.manual_move((x_pos, y_pos, z_pos), 150.0)
+            toolhead.wait_moves()
+            toolhead.dwell(0.500)
+            chip = self.accel_chips[1]
+            aclient = chip.start_internal_client()
+            aclient.msg = []
+            aclient.samples = []
+            cycle_counter = 0
+            while cycle_counter <= self.cycle_per_test:
+                vibration_helper._vibrate_()
+                cycle_counter += 1
+            aclient.finish_measurements()
+            for t, accel_x, accel_y, accel_z in aclient.get_samples():
+                timestamps.append(t)
+                x_data.append(accel_x)
+                y_data.append(accel_y)
+                z_data.append(accel_z)
+        z = np.asarray(z_data)
+        z = z - np.median(z)
+        self.amp_threshold = np.mean(self.calc_accel_limit(np.abs(z), 200, 1))
+        gcmd.respond_info("AMP_THRESHOLD changed tp %.3f" % self.amp_threshold)
 
     cmd_TEST_Z_NOISE_help = (
         "Test the background noise level on the toolhead, while vibrating the z axis"
@@ -612,9 +676,7 @@ class ResonanceZProbe:
         self.cycle_per_test = gcmd.get_float("CYCLE_PER_TEST", self.cycle_per_test)
         self.probe_points = (x_pos, y_pos, z_pos)
         test_results = []
-        self.offset_helper = OffsetHelper(
-            self.probe_points[2], self.step_size, self.tolerance
-        )
+
         toolhead = self.printer.lookup_object("toolhead")
         toolhead.manual_move(self.probe_points, 50.0)
         toolhead.wait_moves()
@@ -623,6 +685,12 @@ class ResonanceZProbe:
             self.printer, self.z_freq, self.accel_per_hz
         )
         self.vibration_helper._set_vibration_variables()
+        # self.offset_helper = OffsetHelper(
+        #     self.probe_points[2], self.step_size, self.tolerance
+        # )
+        self.offset_helper = OffsetHelper(
+            self.probe_points[2], self.vibration_helper.movement_span, self.tolerance
+        )
         curr_z = self.probe_points[2]
         while curr_z >= self.safe_min_z:
             if self.offset_helper.finished:
@@ -639,11 +707,15 @@ class ResonanceZProbe:
         #     gcmd.respond_info("Z:%.4f percentage outside threshold %.2f%%" % res)
         if self.offset_helper.finished:
             gcmd.respond_info(
-                "probe at %.4f,%.4f  is z=%.6f"
+                "probe at %.4f,%.4f  is z=%.6f [%.6f - %.6f]"
                 % (
                     self.probe_points[0],
                     self.probe_points[1],
+                    self.offset_helper.current_offset
+                    - self.vibration_helper.movement_span,
                     self.offset_helper.current_offset,
+                    self.offset_helper.current_offset
+                    - (2 * self.vibration_helper.movement_span),
                 )
             )
 
