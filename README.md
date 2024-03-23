@@ -31,8 +31,11 @@ accel_per_hz: 74
 z_vibration_freq: 200
 amplitude_threshold: 550
 rate_above_threshold: 0.01
-probe_points: 125, 125, 5 # the x,y,z coordinate of the probing position.
-safe_min_z: 4.5 # change this to a z_value you are sure it's touching the bed (but nit too much to damage anything)
+probe_points: 125, 125, 5 # the x,y,z coordinate of
+                          # the probingposition.
+safe_min_z: 4.5 # change this to a z_value you are
+                          # sure it's touching the bed
+                          # (but not too much to damage anything)
 cycle_per_test: 3
 calibration_points:
   235,210 # probe location Right Rear
