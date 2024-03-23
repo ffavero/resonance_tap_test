@@ -26,14 +26,19 @@ This klipper extension, `resonance_z_probe.py`, is designed to operate a resonan
 [resonance_z_probe]
 accel_chip: adxl345
 step_size: 0.01
-samples_tolerance: 0.002
-accel_per_hz: 75
+samples_tolerance: 0.001
+accel_per_hz: 150
 z_vibration_freq: 200
 amplitude_threshold: 550
 rate_above_threshold: 0.01
-probe_points: 80, 150, 0.3
-safe_min_z: 0.15
-cycle_per_test: 20
+probe_points: 180, 125, 0.5
+safe_min_z: 0.14
+cycle_per_test: 3
+calibration_points:
+  235,210 # probe location Right Rear
+  2,210 #probe location Left Rear
+  2,-15 #probe location Left Front
+  235,-15 #probe location Right Front
 ```
 
 
