@@ -557,7 +557,7 @@ class ResonanceZProbe:
         z = np.asarray(z_data)
         z = z - np.median(z)
         self.amp_threshold = np.mean(self.calc_accel_limit(np.abs(z), 200, 1))
-        gcmd.respond_info("AMP_THRESHOLD changed tp %.3f" % self.amp_threshold)
+        gcmd.respond_info("AMP_THRESHOLD changed to %.3f" % self.amp_threshold)
 
     cmd_TEST_Z_NOISE_help = (
         "Test the background noise level on the toolhead, while vibrating the z axis"
