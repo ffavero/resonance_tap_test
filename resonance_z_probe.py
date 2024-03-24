@@ -533,13 +533,13 @@ class ResonanceZProbe:
         vibration_helper = ZVibrationHelper(
             self.printer, self.z_freq, self.accel_per_hz
         )
-        vibration_helper._set_vibration_variables()
 
         for x_pos, y_pos in self.calibration_positions:
             toolhead = self.printer.lookup_object("toolhead")
             toolhead.manual_move((x_pos, y_pos, z_pos), 150.0)
             toolhead.wait_moves()
             toolhead.dwell(0.500)
+            vibration_helper._set_vibration_variables()
             chip = self.accel_chips[1]
             aclient = chip.start_internal_client()
             aclient.msg = []
