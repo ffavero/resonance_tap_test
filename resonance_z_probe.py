@@ -556,7 +556,7 @@ class ResonanceZProbe:
                 z_data.append(accel_z)
         z = np.asarray(z_data)
         z = z - np.median(z)
-        self.amp_threshold = np.mean(self.calc_accel_limit(np.abs(z), 200, 1))
+        self.amp_threshold = np.mean(self.calc_accel_limit(np.abs(z), 200, 2))
         gcmd.respond_info("AMP_THRESHOLD changed to %.3f" % self.amp_threshold)
 
     cmd_TEST_Z_NOISE_help = (
